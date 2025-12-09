@@ -8,9 +8,31 @@ import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
-from log_analyzer import parse_log_line, analyze_file, parse_log_date, LogMetrics
+from unittest.mock import patch, MagicMock
+
+from log_analyzer import parse_log_line, analyze_file, parse_log_date, LogMetrics, lookup_ip
 
 class TestLogAnalyzer(unittest.TestCase):
+    @patch("subprocess.run")
+    def test_lookup_ip_success(self, mock_run):
+        # Mock successful whois output
+        mock_run.return_value = MagicMock(
+            stdout="OrgName: Google LLC\nCountry: US\nNetName: GOOGLE",
+            returncode=0
+        )
+        
+        result = lookup_ip("8.8.8.8")
+        self.assertEqual(result, "(Google LLC / US)")
+        mock_run.assert_called_with(["whois", "8.8.8.8"], capture_output=True, text=True, timeout=5)
+
+    @patch("subprocess.run")
+    def test_lookup_ip_failure(self, mock_run):
+        # Mock failure (e.g. timeout or command not found behavior)
+        mock_run.side_effect = Exception("Command failed")
+        
+        result = lookup_ip("1.2.3.4")
+        self.assertEqual(result, "") # Should fallback nicely
+
     def test_parse_valid_line(self):
         line = '127.0.0.1 - - [09/Dec/2025:11:00:00 -0600] "GET /index.html HTTP/1.1" 200 1024 "-" "Mozilla/5.0"'
         result = parse_log_line(line)

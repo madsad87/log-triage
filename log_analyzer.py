@@ -2,10 +2,12 @@
 import re
 import argparse
 import sys
+import subprocess
 from collections import Counter
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional
 from datetime import datetime, timedelta
+from functools import lru_cache
 
 # Regex for Combined Log Format
 LOG_PATTERN = re.compile(
@@ -51,6 +53,37 @@ class LogMetrics:
         self.error_counts["4xx"] += other.error_counts["4xx"]
         self.error_counts["5xx"] += other.error_counts["5xx"]
         self.admin_ajax_count += other.admin_ajax_count
+
+@lru_cache(maxsize=1024)
+def lookup_ip(ip: str) -> str:
+    """Uses the 'whois' command to find organization and country info for an IP."""
+    try:
+        # Run whois command
+        result = subprocess.run(["whois", ip], capture_output=True, text=True, timeout=5)
+        output = result.stdout
+        
+        org = None
+        country = None
+        
+        # Simple parsing for common whois fields
+        for line in output.splitlines():
+            line_lower = line.lower()
+            if not org and ("orgname:" in line_lower or "org-name:" in line_lower or "netname:" in line_lower):
+                org = line.split(":", 1)[1].strip()
+            if not country and ("country:" in line_lower):
+                country = line.split(":", 1)[1].strip()
+            
+            if org and country:
+                break
+        
+        if org or country:
+            org_str = org if org else "Unknown Org"
+            country_str = country if country else "??"
+            return f"({org_str} / {country_str})"
+        
+        return ""
+    except Exception:
+        return "" # Fail gracefully
 
 def parse_log_line(line: str) -> Dict[str, str]:
     """Parses a single log line and returns a dictionary of fields, or None if no match."""
@@ -109,7 +142,7 @@ def analyze_file(filepath: Path) -> Dict[str, LogMetrics]:
     
     return metrics_by_date
 
-def print_metrics(title: str, metrics: LogMetrics):
+def print_metrics(title: str, metrics: LogMetrics, perform_lookup: bool = False):
     print(f"=== {title} ===")
     print(f"Total Requests: {metrics.total_requests}")
     print(f"Admin-ajax Requests: {metrics.admin_ajax_count}")
@@ -119,7 +152,12 @@ def print_metrics(title: str, metrics: LogMetrics):
 
     print("--- Top 20 Source IPs ---")
     for ip, count in metrics.ip_counter.most_common(20):
-        print(f"{count:<5} {ip}")
+        extra_info = ""
+        if perform_lookup:
+            info = lookup_ip(ip)
+            if info:
+                extra_info = f" {info}"
+        print(f"{count:<5} {ip}{extra_info}")
     print()
 
     print("--- Top 20 User Agents ---")
@@ -134,15 +172,16 @@ def print_metrics(title: str, metrics: LogMetrics):
     print("="*30 + "\n")
 
 
-def print_report(results: Dict[str, LogMetrics]):
+def print_report(results: Dict[str, LogMetrics], perform_lookup: bool = False):
     """Prints the analysis report to stdout."""
     # Sort by date usually
     for date_key in sorted(results.keys()):
-        print_metrics(date_key, results[date_key])
+        print_metrics(date_key, results[date_key], perform_lookup)
 
 def main():
     parser = argparse.ArgumentParser(description="Analyze NGINX/Apache access logs.")
     parser.add_argument("logfile", type=Path, help="Path to the access log file")
+    parser.add_argument("--ip-lookup", action="store_true", help="Perform WHOIS lookup for top IPs")
     args = parser.parse_args()
 
     if not args.logfile.exists():
@@ -150,7 +189,7 @@ def main():
         sys.exit(1)
 
     results = analyze_file(args.logfile)
-    print_report(results)
+    print_report(results, args.ip_lookup)
 
 if __name__ == "__main__":
     main()
